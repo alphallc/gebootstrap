@@ -1,0 +1,10 @@
+#!/usr/bin/env sh
+
+cd /usr/src/linux_vm
+rm -f .version
+[[ ! -f .config ]] && cat /etc/vm/guests/kernel.config > .config
+make -j9 nconfig &&
+make -j9 bzImage modules &&
+make INSTALL_MOD_PATH="/nfs/s/modules" modules_install &&
+cp .config /etc/vm/guests/kernel.config &&
+cp /usr/src/linux_vm/arch/x86/boot/bzImage /var/lib/libvirt/images/kernel

@@ -1,0 +1,13 @@
+#!/usr/bin/env sh
+cd /usr/src/linux
+rm -f .version
+[[ ! -f .config ]] && zcat /proc/config.gz > .config
+make -j9 nconfig &&
+make -j9 bzImage modules &&
+make modules_install &&
+(
+cd /boot/efi
+mv -f kernel.efi kernel.old.efi &>/dev/null;
+cp /usr/src/linux/arch/x86/boot/bzImage kernel.efi
+)
+

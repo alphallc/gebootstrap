@@ -1,0 +1,48 @@
+#!/usr/bin/env sh
+VM="$(basename ${1%%.disk})"
+CH="${1}";
+
+if [[ "${VM}" = "${CH}" ]]; then
+	CH="/mnt/${VM}.disk"
+fi
+
+mnt() {
+    MP="${@:(-1)}"
+    mountpoint -q "${MP}" ||
+    mount "${@}"
+}
+
+sysctl -a | grep chroot_deny | cut -d\  -f1 | while read k; do sysctl $k=0; done
+
+mnt /dev/vm/"${VM}".disk "${CH}"
+mnt -o bind /dev "${CH}"/dev
+mnt -t devpts -o relatime,gid=5,mode=620,ptmxmode=000 devpts "${CH}"/dev/pts
+mnt -t tmpfs -o rw,seclabel,nosuid,nodev tmpfs "${CH}"/dev/shm
+mnt -t proc -o nosuid,nodev,noexec,relatime proc "${CH}"/proc
+mnt -t sysfs -o seclabel,nosuid,nodev,noexec,relatime sysfs "${CH}"/sys
+
+mnt -t binfmt_misc -o rw,nodev,noexec,nosuid binfmt_misc "${CH}"/proc/sys/fs/binfmt_misc
+mnt -t selinuxfs -o rw,relatime selinuxfs "${CH}"/sys/fs/selinux
+mnt -t mqueue -o rw,seclabel,nosuid,nodev,noexec,relatime mqueue "${CH}"/dev/mqueue
+mnt -t securityfs -o rw,nosuid,nodev,noexec,relatime securityfs "${CH}"/sys/kernel/security
+mnt -t configfs -o rw,nosuid,nodev,noexec,relatime configfs "${CH}"/sys/kernel/config
+mnt -t fusectl -o rw,nosuid,nodev,noexec,relatime fusectl "${CH}"/sys/fs/fuse/connections
+mnt -t tmpfs -o rw,seclabel,nosuid,nodev,noexec,relatime,size=10240k,mode=755 cgroup_root "${CH}"/sys/fs/cgroup
+
+mkdir -p "${CH}"/sys/fs/cgroup/{cpu,cpuset,cpuacct,memory,devices,freezer,net_cls,blkio,perf_event,net_prio}
+mnt -t cgroup -o rw,nosuid,nodev,noexec,relatime,cpuset cpuset "${CH}"/sys/fs/cgroup/cpuset
+mnt -t cgroup -o rw,nosuid,nodev,noexec,relatime,cpu cpu "${CH}"/sys/fs/cgroup/cpu
+mnt -t cgroup -o rw,nosuid,nodev,noexec,relatime,cpuacct cpuacct "${CH}"/sys/fs/cgroup/cpuacct
+mnt -t cgroup -o rw,nosuid,nodev,noexec,relatime,memory memory "${CH}"/sys/fs/cgroup/memory
+mnt -t cgroup -o rw,nosuid,nodev,noexec,relatime,devices devices "${CH}"/sys/fs/cgroup/devices
+mnt -t cgroup -o rw,nosuid,nodev,noexec,relatime,freezer freezer "${CH}"/sys/fs/cgroup/freezer
+mnt -t cgroup -o rw,nosuid,nodev,noexec,relatime,net_cls net_cls "${CH}"/sys/fs/cgroup/net_cls
+mnt -t cgroup -o rw,nosuid,nodev,noexec,relatime,blkio blkio "${CH}"/sys/fs/cgroup/blkio
+mnt -t cgroup -o rw,nosuid,nodev,noexec,relatime,perf_event perf_event "${CH}"/sys/fs/cgroup/perf_event
+mnt -t cgroup -o rw,nosuid,nodev,noexec,relatime,net_prio net_prio "${CH}"/sys/fs/cgroup/net_prio
+
+mnt -t tmpfs -o rw,rootcontext=system_u:object_r:tmp_t,seclabel,nosuid,nodev,noexec,relatime tmpfs "${CH}"/tmp
+mnt -t tmpfs -o rw,rootcontext=system_u:object_r:var_run_t,seclabel,nosuid,nodev,noexec,relatime,mode=755 tmpfs "${CH}"/run
+
+mnt -o bind /nfs/s "${CH}"/etc/shared
+mnt -o bind /nfs/p "${CH}"/var/portage

@@ -1,0 +1,46 @@
+#!/usr/bin/env sh
+
+VM="$(basename ${1%%.disk})"
+CH="${1}";
+
+if [[ "${VM}" = "${CH}" ]]; then
+    CH="/mnt/${VM}.disk"
+fi
+
+umnt() {
+    MP=${@:(-1)}
+    mountpoint -q "${MP}" &&
+    umount "${@}"
+}
+
+sync
+umnt "${CH}"/dev/pts
+umnt "${CH}"/dev/shm
+umnt "${CH}"/dev/mqueue
+umnt "${CH}"/dev
+umnt "${CH}"/run
+umnt "${CH}"/proc/sys/fs/binfmt_misc
+umnt "${CH}"/proc
+umnt "${CH}"/sys/fs/selinux
+umnt "${CH}"/sys/kernel/security
+umnt "${CH}"/sys/kernel/config
+umnt "${CH}"/sys/fs/fuse/connections
+umnt "${CH}"/sys/fs/cgroup/cpuset
+umnt "${CH}"/sys/fs/cgroup/cpu
+umnt "${CH}"/sys/fs/cgroup/cpuacct
+umnt "${CH}"/sys/fs/cgroup/memory
+umnt "${CH}"/sys/fs/cgroup/devices
+umnt "${CH}"/sys/fs/cgroup/freezer
+umnt "${CH}"/sys/fs/cgroup/net_cls
+umnt "${CH}"/sys/fs/cgroup/blkio
+umnt "${CH}"/sys/fs/cgroup/perf_event
+umnt "${CH}"/sys/fs/cgroup/net_prio
+umnt "${CH}"/sys/fs/cgroup
+umnt "${CH}"/sys
+umnt "${CH}"/etc/shared
+umnt "${CH}"/var/portage
+umnt "${CH}"/tmp
+
+sysctl -a | grep chroot_deny | cut -d\  -f1 | while read k; do sysctl $k=1; done
+
+[[ -f "${CH}/.chroot_active" ]] || umnt "${CH}"

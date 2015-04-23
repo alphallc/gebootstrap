@@ -1,0 +1,214 @@
+#!/usr/bin/env zsh
+
+#source /lib/rc/sh/functions.sh 2>/dev/null
+eerror() { echo -e "\e[1;31m*\e[0m ${@}\e[0m" >&2 }
+die() { eerror "${@}"; exit 1 }
+einfo() { echo -e "\e[1;32m*\e[0m ${@}\e[0m" >&2 }
+ewarn() { echo -e "\e[1;33m*\e[0m ${@}\e[0m" >&2 }
+eext() { echo -e "\e[1;35m*\e[0m ${@}\e[0m" >&2 }
+
+source /usr/share/portage/config/make.globals 2>/dev/null
+source /etc/make.conf 2>/dev/null
+source /etc/portage/make.conf 2>/dev/null
+
+checks() {
+	if which curl &>/dev/null; then
+		fetch="curl -s"
+	elif which wget &>/dev/null; then
+		fetch="wget -qO-"
+	elif which busybox &>/dev/null; then
+		fetch="busybox wget -qO-"
+	else
+		die "Couldn't locate any supported fetcher (curl, wget, busybox)"
+	fi
+
+	if which pbzip2 &>/dev/null; then
+		bz="pbzip2 -qdc"
+	elif which bzip2 &>/dev/null; then
+		bz="bzip2 -qdc"
+	elif which busybox &>/dev/null; then
+		bz="busybox bzip2 -dc"
+	else
+		die "Couldn't locate any bzip decompressor (pbzip2, bzip2, busybox)"
+	fi
+
+	if which tar &>/dev/null; then
+		unp="tar -xpf- --selinux --xattrs"
+	elif which busybox &>/dev/null; then
+		unp="busybox tar -xpf-"
+	else
+		die "Couldn't locate any tar archiver (tar, busybox)"
+	fi
+
+	if [ "${UID}" = 0 ] && which sandbox &>/dev/null; then
+		ewarn "Running under root. Trying to force sandbox.";
+		root="sandbox";
+	elif which fakeroot &>/dev/null; then
+		root="fakeroot --"
+	elif which sudo &>/dev/null && which sandbox &>/dev/null; then
+		ewarn "Fakeroot not found. Falling back to sudo + sandbox"
+		root="sudo sandbox"
+	else
+		die "Couldn't locate any supported fakeroot gaining utility (fakeroot, sudo+sandbox)"
+	fi
+}
+
+help() {
+	echo -ne "\
+$0 [-h|--help] [-a|--arch] [-g|--hardened] [-m|--mirror] [-p|--path|--mountpoint]
+	-a,--arch                   Architecture (keyword) of system you want to install (defaults to the machine you're run that script).
+	-g,--hardened               Install Gentoo Hardened system.
+	-h,--help                   Show this help.
+	-m,--mirror                 Use specified mirror for downloading tarballs (instead of that one specified in make.conf)
+	-p,--path,--mountpoint      Path to the destination directory, where you want to install Gentoo.
+	-e,--autoexec,--postinst    Path on the system you run this script to the postinst-scipt that should be executed inside the chroot to installed system after it's installation.
+	-o,--overlay                Filesystem 'overlay' to install on top of installed system.
+	-d,--debug                  Debug mode.
+	-c,--chroot                 Chroot command to use to chroot in the system (to run the command specified by '-e' switch, for example).
+	--prestagehook              Command (on the system you run this script) to run before base installation (maybe mounting system partition).
+	--poststagehook             Command (on the system you run this script) to run after base installation (maybe mounting SELinux/cgroups filesystems)
+	--finishhook                Command (on the system you run this script) to run after entire installation (maybe umounting all mounted filesystems)
+"
+}
+
+debug_fetcher() {
+	ewarn ${=real_fetch} ${@} >&2;
+	${=real_fetch} ${@};
+}
+
+debug() {
+	[[ ! -z "${DEBUG}" ]] && eerror "DEBUG: ${@}"
+}
+
+debug_run() {
+	if [[ ! -z "${DEBUG}" ]]; then
+		eerror "DEBUG: ${@}"
+		${@}
+	else
+		${@}
+	fi
+}
+
+config() {
+	i=1;
+	for o in ${@//-}; do
+		debug "#: $# :: i: $i :: @: $@ :: 1: $1 :: 2: $2 :: o: $o"
+
+		if [ "${o}" = "g" -o "${o}" = "hardened" ]; then
+			hardened="-hardened"
+		elif [ "${o}" = "a" -o "${o}" = "arch" ]; then
+			shift ${i}; i=0;
+			for a in alpha amd64 arm hppa ia64 mips ppc s390 sh sparc x86; do
+				if [ "${1}" = "${a}" ]; then
+					arch=${1};
+					break;
+				fi;
+			done;
+			einfo "Выбранная архитектура системы: ${arch}"
+		elif [ "${o}" = "h" -o "${o}" = "help" ]; then
+			help;
+			exit;
+		elif [ "${o}" = "d" -o "${o}" = "debug" ]; then
+			shift ${i}; i=0;
+			export DEBUG="true"
+			ewarn "debug enabled;"
+		elif [ "${o}" = "m" -o "${o}" = "mirror" ]; then
+			shift ${i}; i=0;
+			mirror=${1};
+		elif [ "${o}" = "p" -o "${o}" = "mountpoint" -o "${o}" = "path" ]; then
+			shift ${i}; i=0;
+			mp=${1};
+		elif [ "${o}" = "e" -o "${o}" = "autoexec" -o "${o}" = "postinst" ]; then
+			shift ${i}; i=0;
+			postinst=${1};
+		elif [ "${o}" = "prestagehook" ]; then
+			shift ${i}; i=0;
+			pre_stage_hook="${1}"
+		elif [ "${o}" = "poststagehook" ]; then
+			shift ${i}; i=0;
+			post_stage_hook="${1}"
+		elif [ "${o}" = "finishhook" ]; then
+			shift ${i}; i=0;
+			finish_hook="${1}"
+		elif [ "${o}" = "c" -o "${o}" = "chroot" ]; then
+			shift ${i}; i=0;
+			chroot="${1}";
+		elif [ "${o}" = "o" -o "${o}" = "overlay" ]; then
+			shift ${i}; i=0;
+			overlay=${1};
+		fi;
+		let i=i+1
+	done;
+
+	host_arch="$(uname -m)"
+	[[ -z "${arch}" ]] && ewarn "You did not specified sysem architecture ('-a'). Following architecture will be used to install: ${host_arch} (defaulting to the arch, of the current system)"
+
+	chroot="${chroot:-chroot}"
+	if [[ "${host_arch}" = "x86_64" ]] && [[ "${arch}" =~ "i[3-6]86" ]] && [[ ! "${chroot}" =~ ".*linux32.*" ]]; then
+		chroot="linux32 ${chroot}"
+	fi
+
+	[[ -z "${hardened}" ]] || einfo "Hardened Gentoo installation is enabled."
+	if [[ -z "${mirror}" ]]; then
+		for m in ${(@)=GENTOO_MIRRORS}; do
+			mirror=${m}; break;
+		done;
+		ewarn "You'v not selected mirror to use for tarballs downloading. Trying to use GENTOO_MIRRORS from make.conf: ${mirror}"
+	else
+		einfo "Selected mirror: ${mirror}"
+	fi
+
+	if [[ -z "${mp}" ]]; then
+		mp="./gentoo-${arch}"
+		ewarn "You've not specifiet destination path for system installation. Installing in: ${mp}"
+	else
+		einfo "Installing system to: ${mp}"
+	fi
+}
+
+checks
+config $@
+
+mkdir ${mp} -p;
+export SANDBOX_WRITE="${mp}"
+export LC_ALL=C LANG=C LANGUAGE=C
+
+[[ ! -z "${pre_stage_hook}" ]] && (
+	einfo "Pre-Stage Hook start"
+	debug_run ${=pre_stage_hook}
+)
+
+link=$(debug_run ${=fetch} ${mirror}/releases/${arch}/autobuilds/latest-stage3-${arch}${hardened}.txt | debug_run grep -v '^#' | debug_run cut -f1 -d\  )
+einfo "Installation start."
+
+einfo "Stage3 installing..."
+debug_run ${=fetch} ${mirror}/releases/${arch}/autobuilds/${link} | debug_run ${=bz} | debug_run ${=root} ${=unp} -C ${mp}
+einfo "Stage3 installed."
+[[ ! -z "${overlay}" ]] && (
+	einfo "Installing user's filesystem 'overlay'..."
+	debug_run ${=root} rsync -uaHAXqc "${overlay}"/* "${mp}";
+	einfo "'Overlay' installed."
+	sync
+)
+
+[[ ! -z "${post_stage_hook}" ]] && (
+	einfo "Post-Stage Hook start"
+	debug_run ${=post_stage_hook}
+)
+
+[[ ! -z "${postinst}" ]] && (
+	einfo "Post-installation script start..."
+	debug_run ${=root} rsync -uaHAXqc "${postinst}" "${mp}/usr/local/bin/postinst.sh";
+	debug ${=chroot} ${mp} /bin/sh /usr/local/bin/postinst.sh
+	${=chroot} ${mp} /bin/sh "/usr/local/bin/postinst.sh"
+	debug_run ${=root} rm "${mp}/usr/local/bin/postinst.sh" 2>/dev/null
+	einfo "Pst-install script finished."
+	sync
+)
+
+[[ ! -z "${finish_hook}" ]] && (
+	einfo "Finish Hook started"
+	debug_run ${=finish_hook}
+)
+
+sync
